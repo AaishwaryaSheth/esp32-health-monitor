@@ -1,0 +1,17 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+
+# Local secrets — never commit real WiFi / HiveMQ credentials
+main/app_secrets.h
+
+# Machine-specific build helpers (regenerate per machine)
+build_idf.ps1
+build_idf.bat
+build_out.log
+
+# Editor / OS
+.vscode/
+*.swp
+.DS_Store

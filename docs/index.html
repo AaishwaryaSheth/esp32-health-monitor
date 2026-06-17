@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ESP32 Health Monitor</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --txt:#e6edf3;
+          --muted:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--txt); }
+  header { padding:20px 24px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+  h1 { font-size:18px; margin:0; }
+  .status { font-size:13px; color:var(--muted); display:flex; align-items:center; gap:8px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--bad); }
+  .dot.on { background:var(--ok); }
+  main { padding:24px; display:grid; gap:16px;
+         grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); max-width:1100px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  .label { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .value { font-size:30px; font-weight:600; margin-top:6px; }
+  .unit { font-size:14px; color:var(--muted); font-weight:400; }
+  .bar { height:8px; background:#21262d; border-radius:4px; margin-top:12px; overflow:hidden; }
+  .bar > span { display:block; height:100%; width:0; background:var(--accent); transition:width .3s; }
+  .led-card { display:flex; flex-direction:column; gap:14px; }
+  .led-row { display:flex; align-items:center; gap:14px; }
+  .led-light { width:36px; height:36px; border-radius:50%; background:#21262d; border:2px solid var(--line); }
+  .led-light.on { background:var(--warn); box-shadow:0 0 18px var(--warn); border-color:var(--warn); }
+  button { background:var(--accent); color:#0d1117; border:0; padding:10px 16px;
+           border-radius:8px; font-weight:600; cursor:pointer; font-size:14px; }
+  button:hover { filter:brightness(1.1); }
+  .cfg { padding:0 24px 24px; max-width:1100px; margin:0 auto; }
+  .cfg details { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 18px; }
+  .cfg input { width:100%; padding:8px; margin:6px 0; background:#0d1117; border:1px solid var(--line);
+               color:var(--txt); border-radius:6px; }
+  summary { cursor:pointer; color:var(--accent); }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding:16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ESP32 Health Monitor</h1>
+  <div class="status"><span id="dot" class="dot"></span><span id="conn">disconnected</span></div>
+</header>
+
+<main>
+  <div class="card">
+    <div class="label">Free Heap</div>
+    <div class="value"><span id="heap">--</span> <span class="unit">KB</span></div>
+    <div class="bar"><span id="heapBar"></span></div>
+    <div class="label" style="margin-top:10px">Min free: <span id="minHeap">--</span> KB</div>
+  </div>
+
+  <div class="card">
+    <div class="label">CPU Load — Core 0</div>
+    <div class="value"><span id="cpu0">--</span><span class="unit">%</span></div>
+    <div class="bar"><span id="cpu0Bar"></span></div>
+    <div class="label" style="margin-top:10px">Core 1: <span id="cpu1">--</span>%</div>
+    <div class="bar"><span id="cpu1Bar"></span></div>
+  </div>
+
+  <div class="card">
+    <div class="label">Uptime</div>
+    <div class="value" id="uptime">--</div>
+  </div>
+
+  <div class="card">
+    <div class="label">WiFi RSSI</div>
+    <div class="value"><span id="rssi">--</span> <span class="unit">dBm</span></div>
+    <div class="bar"><span id="rssiBar"></span></div>
+  </div>
+
+  <div class="card led-card">
+    <div class="label">LED Status &amp; Control</div>
+    <div class="led-row">
+      <div id="ledLight" class="led-light"></div>
+      <div class="value" style="font-size:22px"><span id="ledState">--</span></div>
+    </div>
+    <button id="ledBtn">Toggle LED</button>
+  </div>
+</main>
+
+<div class="cfg">
+  <details>
+    <summary>Connection settings</summary>
+    <label class="label">HiveMQ Cloud WebSocket host (no protocol, no port)</label>
+    <input id="host" placeholder="YOUR-CLUSTER.s1.eu.hivemq.cloud" />
+    <label class="label">Username</label>
+    <input id="user" placeholder="hivemq username" />
+    <label class="label">Password</label>
+    <input id="pass" type="password" placeholder="hivemq password" />
+    <label class="label">Device ID</label>
+    <input id="device" value="esp32-health-01" />
+    <button id="connectBtn" style="margin-top:10px">Connect</button>
+  </details>
+</div>
+
+<footer>ESP32 + FreeRTOS &middot; MQTT over WSS via HiveMQ Cloud &middot; hosted on GitHub Pages</footer>
+
+<!-- MQTT.js over WebSocket -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let client = null;
+  let deviceId = "esp32-health-01";
+
+  // Persist settings locally so you don't retype them.
+  const saved = JSON.parse(localStorage.getItem("esp32hm") || "{}");
+  if (saved.host) $("host").value = saved.host;
+  if (saved.user) $("user").value = saved.user;
+  if (saved.device) $("device").value = saved.device;
+
+  function topicTelemetry() { return `health/${deviceId}/telemetry`; }
+  function topicLedCmd()    { return `health/${deviceId}/led/set`; }
+  function topicLedState()  { return `health/${deviceId}/led/state`; }
+
+  function setConn(ok, txt) {
+    $("dot").classList.toggle("on", ok);
+    $("conn").textContent = txt;
+  }
+
+  function fmtUptime(s) {
+    const d = Math.floor(s / 86400); s %= 86400;
+    const h = Math.floor(s / 3600);  s %= 3600;
+    const m = Math.floor(s / 60);    const sec = s % 60;
+    return (d ? d + "d " : "") + String(h).padStart(2,"0") + ":" +
+           String(m).padStart(2,"0") + ":" + String(sec).padStart(2,"0");
+  }
+
+  function applyTelemetry(d) {
+    const heapKB = (d.free_heap / 1024).toFixed(1);
+    $("heap").textContent = heapKB;
+    $("minHeap").textContent = (d.min_free_heap / 1024).toFixed(1);
+    // ESP32 has ~320KB usable DRAM; scale the bar against that.
+    $("heapBar").style.width = Math.min(100, (d.free_heap / 327680) * 100) + "%";
+
+    const c0 = d.cpu_load?.[0] ?? 0, c1 = d.cpu_load?.[1] ?? 0;
+    $("cpu0").textContent = c0.toFixed(1);
+    $("cpu1").textContent = c1.toFixed(1);
+    $("cpu0Bar").style.width = c0 + "%";
+    $("cpu1Bar").style.width = c1 + "%";
+
+    $("uptime").textContent = fmtUptime(d.uptime_s);
+
+    $("rssi").textContent = d.rssi;
+    // RSSI -90 (bad) .. -30 (great) mapped to 0..100%.
+    $("rssiBar").style.width = Math.max(0, Math.min(100, (d.rssi + 90) / 60 * 100)) + "%";
+
+    if (d.led) setLed(d.led === "on");
+  }
+
+  function setLed(on) {
+    $("ledLight").classList.toggle("on", on);
+    $("ledState").textContent = on ? "ON" : "OFF";
+  }
+
+  function connect() {
+    const host = $("host").value.trim();
+    const user = $("user").value.trim();
+    const pass = $("pass").value;
+    deviceId = $("device").value.trim() || "esp32-health-01";
+    if (!host) { alert("Enter your HiveMQ Cloud host"); return; }
+
+    localStorage.setItem("esp32hm", JSON.stringify({ host, user, device: deviceId }));
+
+    // HiveMQ Cloud WebSocket TLS endpoint is port 8884, path /mqtt.
+    const url = `wss://${host}:8884/mqtt`;
+    setConn(false, "connecting…");
+
+    if (client) { client.end(true); }
+    client = mqtt.connect(url, {
+      username: user,
+      password: pass,
+      clientId: "dashboard-" + Math.random().toString(16).slice(2, 8),
+      clean: true,
+      reconnectPeriod: 3000,
+    });
+
+    client.on("connect", () => {
+      setConn(true, "connected");
+      client.subscribe([topicTelemetry(), topicLedState()], { qos: 1 });
+    });
+    client.on("reconnect", () => setConn(false, "reconnecting…"));
+    client.on("close", () => setConn(false, "disconnected"));
+    client.on("error", (e) => { setConn(false, "error"); console.error(e); });
+
+    client.on("message", (topic, payload) => {
+      const msg = payload.toString();
+      if (topic === topicTelemetry()) {
+        try { applyTelemetry(JSON.parse(msg)); } catch (e) { console.warn(e); }
+      } else if (topic === topicLedState()) {
+        if (msg === "offline") setConn(true, "connected (device offline)");
+        else setLed(msg === "on");
+      }
+    });
+  }
+
+  $("connectBtn").addEventListener("click", connect);
+  $("ledBtn").addEventListener("click", () => {
+    if (client && client.connected) client.publish(topicLedCmd(), "toggle", { qos: 1 });
+  });
+
+  // Auto-connect if we already have host + (typically) saved creds in the form.
+  if (saved.host) { /* user still needs to enter password, leave manual */ }
+</script>
+</body>
+</html>

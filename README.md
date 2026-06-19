@@ -89,3 +89,5 @@ esp32-health-monitor/
 ├─ docs/index.html           # GitHub Pages dashboard (MQTT.js over WSS)
 └─ .github/workflows/pages.yml
 ```
+##Videos and Photos
+https://drive.google.com/drive/folders/1ADC5QMlqW1sD0J4CYJpx8HwfYHvox57L?usp=sharing
